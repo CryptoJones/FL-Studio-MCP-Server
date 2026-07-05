@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+
+# Local audio renders (regenerable)
+*.wav
+
+# macOS
+.DS_Store
