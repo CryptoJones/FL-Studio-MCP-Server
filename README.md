@@ -14,6 +14,13 @@ which is dedicated to Maj. Brian Dix of "The Commandant's Own" — the two Marin
 
 # FL-Studio-MCP-Server
 
+[![CI](https://github.com/CryptoJones/FL-Studio-MCP-Server/actions/workflows/ci.yml/badge.svg)](https://github.com/CryptoJones/FL-Studio-MCP-Server/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?logo=apache)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-CryptoJones%2FFL--Studio--MCP--Server-181717?logo=github&logoColor=white)](https://github.com/CryptoJones/FL-Studio-MCP-Server)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![MCP](https://img.shields.io/badge/MCP-server-6E56CF?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io/)
+[![Version](https://img.shields.io/badge/version-0.0.1-orange)](https://github.com/CryptoJones/FL-Studio-MCP-Server)
+
 An **MCP server that lets Claude Code (and any MCP client) interact with FL Studio** —
 drive the running DAW and generate/edit FL projects programmatically.
 
