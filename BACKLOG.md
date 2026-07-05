@@ -5,15 +5,15 @@ Every item here has a matching issue and vice versa; keep the two in sync.
 
 ## Open
 
-- [ ] ADR: choose the primary integration route (PyFLP first, Flapi later) ([#1](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/1))
-- [ ] MCP server skeleton: FastMCP + `ping`/`routes` tools, packaging, entry point ([#2](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/2))
-- [ ] **Route A (PyFLP)** — generate an editable `.flp` from a track/pattern/tempo spec ([#3](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/3))
 - [ ] **Route B (Flapi)** — live control of running FL (IAC MIDI + server script + transport/mixer) ([#4](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/4))
 - [ ] **Route C (Piano Roll / Edison)** — library of one-off note/audio transform scripts ([#5](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/5))
-- [ ] Register the server in Claude Code (`.mcp.json`) + usage docs; e2e: port As30p symphony to `.flp` ([#6](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/6))
+- [ ] End-to-end: register in Claude Code + port the As30p symphony arrangement to a `.flp` ([#6](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/6))
 
 ## Done
 
+- [x] ADR: primary route is **PyFLP first, Flapi later** — documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (2026-07-05) ([#1](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/1)).
+- [x] MCP server skeleton: FastMCP + `ping`/`routes`, packaging, entry point; each route registers its own tools (2026-07-05) ([#2](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/2)).
+- [x] **Route A (PyFLP)** — `flp_create`/`flp_info`/`flp_set_tempo`/`flp_set_metadata`/`flp_rename_channel`, bundled FL Empty template, PyFLP-on-modern-CPython shim, pytest suite + CI on 3.11/3.12 (2026-07-05) ([#3](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/3)).
 - [x] Scaffold the repo: README, architecture/research doc (the 3 API routes), `.gitignore`, `pyproject.toml`, MCP server skeleton + one stub module per route (2026-07-05).
 
 ---
