@@ -1,0 +1,26 @@
+"""Transpose — shift the selected notes (or all notes) by a number of semitones.
+
+A Piano Roll script for FL Studio. Runs inside FL: open the Piano Roll, click the
+wrench/tools dropdown, and choose this script. See Route C in FL-Studio-MCP-Server.
+"""
+import flpianoroll as flp
+
+
+def createDialog() -> flp.ScriptDialog:
+    form = flp.ScriptDialog("Transpose", "Shift notes up or down by semitones.")
+    form.addInputKnobInt("Semitones", 12, -48, 48)
+    return form
+
+
+def apply(form: flp.ScriptDialog) -> None:
+    semitones = int(form.getInputValue("Semitones"))
+    if semitones == 0:
+        return
+
+    # Clone every note, shift its pitch, then rewrite the score — the reliable
+    # documented pattern for mutating existing notes.
+    notes = [flp.score.getNote(i).clone() for i in range(flp.score.noteCount)]
+    flp.score.clearNotes()
+    for note in notes:
+        note.number = max(0, min(131, note.number + semitones))
+        flp.score.addNote(note)

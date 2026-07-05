@@ -11,8 +11,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Route B — live control of a running FL Studio. Flapi may need a git install; see docs/ARCHITECTURE.md.
-live = ["flapi"]
+# Route B — live control of a running FL Studio via Flapi (pulls in the FL API stubs).
+live = ["flapi>=1.0", "fl-studio-api-stubs"]
 test = ["pytest>=8.0"]
 
 [project.scripts]
@@ -24,10 +24,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fl_studio_mcp"]
-
-# Bundle FL's Empty template so new .flp projects can be minted offline.
-[tool.hatch.build.targets.wheel.force-include]
-"src/fl_studio_mcp/templates/empty.flp" = "fl_studio_mcp/templates/empty.flp"
+# Bundle the non-.py data files: FL's Empty template (Route A) + Piano Roll scripts (Route C).
+artifacts = ["*.flp", "*.pyscript"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

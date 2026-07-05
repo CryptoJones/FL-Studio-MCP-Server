@@ -1,0 +1,59 @@
+"""Scale Fill — generate a run of notes drawn from a musical scale.
+
+Fills a stretch of the Piano Roll with evenly-spaced notes whose pitches are chosen
+from a scale, at a chosen density — a quick way to sketch a melodic or arpeggiated
+line to edit by hand. A Piano Roll script for FL Studio.
+"""
+import random
+
+import flpianoroll as flp
+
+# Scale index -> semitone offsets from the tonic (one octave).
+SCALES = [
+    [0, 2, 4, 5, 7, 9, 11],   # 0: major (Ionian)
+    [0, 2, 3, 5, 7, 8, 10],   # 1: natural minor (Aeolian)
+    [0, 2, 3, 5, 7, 9, 10],   # 2: Dorian
+    [0, 2, 4, 7, 9],          # 3: major pentatonic
+    [0, 3, 5, 7, 10],         # 4: minor pentatonic
+    [0, 2, 4, 6, 7, 9, 11],   # 5: Lydian
+]
+
+
+def createDialog() -> flp.ScriptDialog:
+    form = flp.ScriptDialog("Scale Fill", "Generate notes from a scale (0=maj 1=min 2=dor 3=majPent 4=minPent 5=lyd).")
+    form.addInputKnobInt("Tonic", 60, 0, 131)          # 60 = C5 in FL
+    form.addInputKnobInt("Scale", 0, 0, len(SCALES) - 1)
+    form.addInputKnobInt("Octaves", 2, 1, 4)
+    form.addInputKnobInt("Steps", 16, 1, 64)
+    form.addInputKnobInt("Step length (ticks)", flp.score.PPQ // 4, 1, 4 * flp.score.PPQ)
+    form.addInputKnob("Density", 0.85, 0.05, 1.0)
+    form.addInputCheckbox("Clear first", True)
+    return form
+
+
+def apply(form: flp.ScriptDialog) -> None:
+    tonic = int(form.getInputValue("Tonic"))
+    scale = SCALES[int(form.getInputValue("Scale"))]
+    octaves = int(form.getInputValue("Octaves"))
+    steps = int(form.getInputValue("Steps"))
+    step_len = int(form.getInputValue("Step length (ticks)"))
+    density = float(form.getInputValue("Density"))
+    clear_first = bool(form.getInputValue("Clear first"))
+
+    if clear_first:
+        flp.score.clearNotes(True)
+
+    pitches = [tonic + o * 12 + s for o in range(octaves) for s in scale]
+    pitches = [p for p in pitches if 0 <= p < 132]
+    if not pitches:
+        return
+
+    for n in range(steps):
+        if random.random() > density:
+            continue
+        note = flp.Note()
+        note.number = random.choice(pitches)
+        note.time = n * step_len
+        note.length = step_len
+        note.velocity = 0.8
+        flp.score.addNote(note)
