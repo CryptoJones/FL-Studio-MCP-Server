@@ -7,6 +7,22 @@ on:
     branches: [main]
 
 jobs:
+  # Guard: the README version badge must match pyproject's version, so the static
+  # badge can never silently drift. Fix drift with `scripts/bump-version.sh <ver>`.
+  version-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: README version badge matches pyproject version
+        run: |
+          code=$(grep -oE '^version *= *"[0-9.]+"' pyproject.toml | grep -oE '[0-9]+(\.[0-9]+)+')
+          badge=$(grep -oE 'badge/version-[0-9.]+-orange' README.md | grep -oE '[0-9]+(\.[0-9]+)+')
+          echo "pyproject=$code  README badge=$badge"
+          if [ -z "$code" ] || [ "$code" != "$badge" ]; then
+            echo "::error::README version badge ($badge) != pyproject version ($code). Run scripts/bump-version.sh <version>."
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
     strategy:
