@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "MCP server to interact with FL Studio — drive the DAW and generate/edit .flp projects"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 dependencies = [
     "mcp>=1.2.0",
     "pyflp>=2.2.0",     # Route A — offline .flp read/write
@@ -13,6 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 # Route B — live control of a running FL Studio. Flapi may need a git install; see docs/ARCHITECTURE.md.
 live = ["flapi"]
+test = ["pytest>=8.0"]
 
 [project.scripts]
 fl-studio-mcp = "fl_studio_mcp.server:main"
@@ -23,3 +24,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fl_studio_mcp"]
+
+# Bundle FL's Empty template so new .flp projects can be minted offline.
+[tool.hatch.build.targets.wheel.force-include]
+"src/fl_studio_mcp/templates/empty.flp" = "fl_studio_mcp/templates/empty.flp"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

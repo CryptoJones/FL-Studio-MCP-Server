@@ -1,7 +1,9 @@
 """FL-Studio-MCP-Server — MCP server bridging Claude Code and FL Studio.
 
-Scaffold. The three integration routes live under ``fl_studio_mcp.routes``
-(see docs/ARCHITECTURE.md). Real tools land per BACKLOG.md.
+The three integration routes live under ``fl_studio_mcp.routes`` (see
+docs/ARCHITECTURE.md). Route A (PyFLP, offline .flp read/write) is implemented and
+registers real tools; Routes B (Flapi) and C (scripts) are scaffolded pending
+FL-side setup. Remaining work is tracked in BACKLOG.md.
 """
 from mcp.server.fastmcp import FastMCP
 
@@ -22,6 +24,13 @@ def routes() -> str:
     return "\n".join(
         [pyflp_route.status(), flapi_route.status(), script_route.status()]
     )
+
+
+# Register each route's tools. Route A is live; B/C register their (stub) tools too.
+for _route in (pyflp_route, flapi_route, script_route):
+    _register = getattr(_route, "register", None)
+    if callable(_register):
+        _register(mcp)
 
 
 def main() -> None:
