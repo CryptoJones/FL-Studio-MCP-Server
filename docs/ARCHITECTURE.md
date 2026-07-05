@@ -55,6 +55,18 @@ editable FL projects from a spec (e.g. port the As30p `symphony.py` arrangement 
 `.flp`). Add **Route B (Flapi)** for live transport/mixer control once the project route
 is proven. Keep **Route C** as a library of one-off note/audio generators.
 
+## Status (2026-07-05)
+
+All three routes are implemented and wired into the MCP server:
+
+- **Route A** — `flp_create` / `flp_info` / `flp_set_tempo` / `flp_set_metadata` /
+  `flp_rename_channel`, backed by a bundled FL Empty template.
+- **Route B** — `fl_status` / `fl_connect` / `fl_install_server` / `fl_hint` /
+  `fl_transport` / `fl_get_tempo` / `fl_mixer` / `fl_channels` / `fl_eval_expr`, over Flapi.
+  Graceful degradation when the `live` extra or FL is absent.
+- **Route C** — a bundled `flpianoroll` script library (`transpose`, `humanize`, `strum`,
+  `note_repeats`, `scale_fill`) plus `piano_scripts_list` / `_describe` / `_install`.
+
 ---
 
 *Proudly Made in Nebraska. Go Big Red! 🌽 <https://xkcd.com/2347/>*

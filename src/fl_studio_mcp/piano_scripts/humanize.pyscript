@@ -1,0 +1,33 @@
+"""Humanize — add subtle random variation to note timing and velocity.
+
+Takes stiff, quantized notes and nudges each one slightly off-grid in time and
+velocity, for a more natural, played-by-hand feel. A Piano Roll script for FL Studio.
+"""
+import random
+
+import flpianoroll as flp
+
+
+def createDialog() -> flp.ScriptDialog:
+    form = flp.ScriptDialog(
+        "Humanize", "Randomize timing and velocity slightly for a natural feel."
+    )
+    # Max timing jitter, in ticks (PPQ = ticks per quarter note).
+    form.addInputKnobInt("Timing (ticks)", flp.score.PPQ // 16, 0, flp.score.PPQ // 2)
+    # Max velocity jitter, as a fraction of full scale (0..1).
+    form.addInputKnob("Velocity", 0.1, 0.0, 0.5)
+    return form
+
+
+def apply(form: flp.ScriptDialog) -> None:
+    max_time = int(form.getInputValue("Timing (ticks)"))
+    max_vel = float(form.getInputValue("Velocity"))
+
+    notes = [flp.score.getNote(i).clone() for i in range(flp.score.noteCount)]
+    flp.score.clearNotes()
+    for note in notes:
+        if max_time:
+            note.time = max(0, note.time + random.randint(-max_time, max_time))
+        if max_vel:
+            note.velocity = min(1.0, max(0.0, note.velocity + random.uniform(-max_vel, max_vel)))
+        flp.score.addNote(note)

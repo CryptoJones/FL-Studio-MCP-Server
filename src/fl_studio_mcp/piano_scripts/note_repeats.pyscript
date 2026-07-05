@@ -1,0 +1,32 @@
+"""Note Repeats — echo each note forward in time, with optional pitch/velocity decay.
+
+Copies every note N times, each copy pushed later in time and (optionally) shifted in
+pitch and faded in velocity — a classic delay/echo generator. A Piano Roll script.
+Adapted from Image-Line's official Piano Roll Scripting API tutorial.
+"""
+import flpianoroll as flp
+
+
+def createDialog() -> flp.ScriptDialog:
+    form = flp.ScriptDialog("Note Repeats", "Echo notes with time, pitch, and velocity offsets.")
+    form.addInputKnobInt("Repeats", 3, 1, 16)
+    form.addInputKnobInt("Delay (ticks)", flp.score.PPQ // 2, 1, 4 * flp.score.PPQ)
+    form.addInputKnobInt("Pitch offset", 0, -24, 24)
+    form.addInputKnob("Velocity decay", 0.75, 0.0, 1.0)
+    return form
+
+
+def apply(form: flp.ScriptDialog) -> None:
+    repeats = int(form.getInputValue("Repeats"))
+    delay = int(form.getInputValue("Delay (ticks)"))
+    pitch_offset = int(form.getInputValue("Pitch offset"))
+    decay = float(form.getInputValue("Velocity decay"))
+
+    for n in range(flp.score.noteCount):
+        for r in range(1, repeats + 1):
+            note = flp.score.getNote(n).clone()
+            note.time += r * delay
+            note.number += r * pitch_offset
+            note.velocity *= decay ** r
+            if 0 <= note.number < 132:
+                flp.score.addNote(note)

@@ -35,8 +35,8 @@ tooling — as clean MCP tools.
 | Route | Module | What it does | Runs | Status |
 |-------|--------|--------------|------|--------|
 | **A — PyFLP** | `routes/pyflp_route.py` | Read/write `.flp` project files directly (tempo, title, metadata, channel names). | Offline, no FL running | ✅ **implemented** |
-| **B — Flapi** | `routes/flapi_route.py` | External client → a server script inside FL → the 427-function API (play/stop, mixer, params, export). | Live, FL open | 🚧 scaffold (needs FL-side setup) |
-| **C — Piano Roll / Edison** | `routes/script_route.py` | Python invoked from FL's menus to transform notes / audio. | One-off in FL | 🚧 scaffold |
+| **B — Flapi** | `routes/flapi_route.py` | External client → a server script inside FL → the 427-function API (transport, mixer, channels, hint, eval). | Live, FL open | ✅ **implemented** (needs FL-side setup) |
+| **C — Piano Roll** | `routes/script_route.py` | A library of `flpianoroll` scripts, installed into FL's Piano Roll tools menu. | One-off in FL | ✅ **implemented** |
 
 Full breakdown, links, and trade-offs: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
@@ -69,25 +69,76 @@ API; that's the job of **Route B (Flapi)**, where FL itself does the note-making
 > hook runs. `fl_studio_mcp/_compat.py` installs a tiny, targeted shim that routes the
 > lookup back through PyFLP's own resolver, without patching PyFLP's source.
 
+## Route B (Flapi) — live control of a running FL
+
+Route B drives a **running** FL Studio through [Flapi](https://github.com/MaddyGuthridge/Flapi):
+an external client talks to a server script inside FL over a virtual MIDI port (macOS
+IAC Driver, auto-created), so calls to FL's scripting API hit the live session.
+
+One-time FL-side setup:
+
+```sh
+pip install "fl-studio-mcp-server[live]"   # flapi + FL API stubs
+# then, via the MCP tool `fl_install_server` (or `python -m flapi install`), and restart FL
+```
+
+| Tool | What it does |
+|------|--------------|
+| `fl_status` | Is the `live` extra installed? Are we connected? (safe — never touches MIDI) |
+| `fl_connect` | Connect to a running FL via Flapi (returns FL's API version). |
+| `fl_install_server` | Install the Flapi server into FL (`flapi install`); restart FL after. |
+| `fl_hint(message)` | Show a hint in FL's panel — the quickest connectivity smoke test. |
+| `fl_transport(action)` | `play` / `stop` / `record` / `toggle` the transport. |
+| `fl_get_tempo` | Current project tempo (BPM). |
+| `fl_mixer(index?, volume?)` | Track count / read a track volume / set a track volume. |
+| `fl_channels` | List channel-rack channel names. |
+| `fl_eval_expr(expr)` | Escape hatch: evaluate any expression in the live FL (e.g. `patterns.patternCount()`). |
+
+Every Route B tool **degrades gracefully** — with no `live` extra or no running FL, it
+returns a structured `{"ok": false, "error": …}` instead of crashing the server.
+
+## Route C (Piano Roll) — a bundled script library
+
+Route C ships ready-made **[Piano Roll scripts](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/pianoroll_scripting_api.htm)**
+(`flpianoroll`) and installs them into FL's *Piano roll scripts* folder, where they show
+up under the Piano Roll's Tools (wrench) dropdown:
+
+| Script | What it does |
+|--------|--------------|
+| `transpose` | Shift notes by N semitones. |
+| `humanize` | Subtle random timing/velocity variation for a played-by-hand feel. |
+| `strum` | Roll each chord out over time, like a guitar strum. |
+| `note_repeats` | Echo notes with time / pitch / velocity-decay offsets. |
+| `scale_fill` | Generate a run of notes drawn from a scale (major/minor/modes/pentatonic). |
+
+| Tool | What it does |
+|------|--------------|
+| `piano_scripts_list` | List the bundled scripts + summaries. |
+| `piano_scripts_describe(name)` | Show a script's full source. |
+| `piano_scripts_install(dest?)` | Copy them into FL's Piano roll scripts folder. |
+
 ## Status
 
-Route A **implemented and tested** (see **Tests** below). Routes B/C scaffolded, pending
-FL-side setup. See **[BACKLOG.md](BACKLOG.md)** / the GitHub **Issues** tab for the plan.
+**All three routes implemented and tested.** Route A and the Route B error-paths / Route C
+scripts+installer are covered by the pytest suite (no FL needed); the live Route B calls
+and in-FL script execution require FL Studio with the one-time setup above. See
+**[BACKLOG.md](BACKLOG.md)** / the GitHub **Issues** tab.
 
 ## Layout
 
 - `src/fl_studio_mcp/server.py` — the MCP server (FastMCP); registers each route's tools.
-- `src/fl_studio_mcp/routes/` — one module per API route (A/B/C above).
+- `src/fl_studio_mcp/routes/` — one module per API route: `pyflp_route` (A), `flapi_route` (B), `script_route` (C).
 - `src/fl_studio_mcp/templates/empty.flp` — bundled FL *Empty* template (Route A base).
+- `src/fl_studio_mcp/piano_scripts/*.pyscript` — the bundled Route C Piano Roll scripts.
 - `src/fl_studio_mcp/_compat.py` — the PyFLP-on-modern-CPython shim.
-- `tests/` — pytest suite for Route A (runs against the bundled template; no FL needed).
+- `tests/` — pytest suite (Route A round-trips, Route B error-paths, Route C scripts+installer; no FL needed).
 - `docs/` — architecture & research notes.
 - `BACKLOG.md` — task list, mirrored to Issues.
 
 ## Requirements
 
 - Python **3.11 or 3.12** (PyFLP 2.2.1 does not yet support 3.13+).
-- FL Studio 2025 (25.x) — only to *open* generated projects, and (later) for the Flapi route.
+- FL Studio 2025 (25.x) — to *open* Route A projects, and (with the `live` extra) for Routes B/C.
 
 ## Install & run
 
@@ -121,10 +172,13 @@ pip install -e ".[test]"
 pytest -q
 ```
 
-The suite exercises Route A end-to-end — create, inspect, set-tempo (in place and to a
-new path), metadata edits, channel rename, and round-trip re-parse — all against the
-bundled template, so it needs neither FL Studio nor any project file of your own. CI runs
-it on Python 3.11 and 3.12 for every push/PR (`.github/workflows/ci.yml`).
+The suite covers all three routes without needing FL Studio: **Route A** end-to-end
+(create, inspect, set-tempo in place and to a new path, metadata, channel rename,
+round-trip re-parse against the bundled template); **Route B** at its error boundary
+(missing extra / FL unreachable return clean errors, not crashes); and **Route C**
+(every bundled `.pyscript` is syntax-checked and follows FL's `createDialog`/`apply`
+contract, plus the installer). CI runs it on Python 3.11 and 3.12 for every push/PR
+(`.github/workflows/ci.yml`).
 
 ## License
 

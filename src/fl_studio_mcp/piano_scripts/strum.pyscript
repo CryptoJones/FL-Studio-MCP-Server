@@ -1,0 +1,42 @@
+"""Strum — spread the notes of each chord across time, like a strummed guitar.
+
+Notes that start at (nearly) the same time are treated as one chord; each is delayed
+progressively so the chord rolls out low-to-high (or high-to-low). A Piano Roll script.
+"""
+import flpianoroll as flp
+
+
+def createDialog() -> flp.ScriptDialog:
+    form = flp.ScriptDialog("Strum", "Roll each chord out over time, like a guitar strum.")
+    form.addInputKnobInt("Delay (ticks)", flp.score.PPQ // 8, 0, flp.score.PPQ)
+    # 0 = low-to-high (upstroke feel), 1 = high-to-low (downstroke).
+    form.addInputCheckbox("High to low", False)
+    return form
+
+
+def apply(form: flp.ScriptDialog) -> None:
+    delay = int(form.getInputValue("Delay (ticks)"))
+    high_to_low = bool(form.getInputValue("High to low"))
+    if delay == 0:
+        return
+
+    notes = [flp.score.getNote(i).clone() for i in range(flp.score.noteCount)]
+    if not notes:
+        return
+
+    # Group notes into chords by (nearly) shared start time.
+    tolerance = max(1, flp.score.PPQ // 32)
+    notes.sort(key=lambda n: n.time)
+    chords: list[list] = []
+    for note in notes:
+        if chords and abs(note.time - chords[-1][0].time) <= tolerance:
+            chords[-1].append(note)
+        else:
+            chords.append([note])
+
+    flp.score.clearNotes()
+    for chord in chords:
+        chord.sort(key=lambda n: n.number, reverse=high_to_low)
+        for offset, note in enumerate(chord):
+            note.time += offset * delay
+            flp.score.addNote(note)
