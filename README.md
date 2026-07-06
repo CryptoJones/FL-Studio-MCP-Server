@@ -59,6 +59,7 @@ Tools registered by the server:
 |------|--------------|
 | `flp_info(path)` | Inspect an `.flp` — FL version, PPQ, tempo, title/artists/genre/comments, channel & pattern names. |
 | `flp_create(out_path, title?, tempo?, artists?, genre?, comments?)` | Create a new `.flp` (from the Empty template) with the given metadata. |
+| `flp_load_samples(out_path, samples, title?, tempo?, …)` | Create a new `.flp` with **one Sampler channel per audio file** — every clip loaded (and named) in the Channel Rack, ready to arrange. Clones the template's Sampler at the event level and injects a `SamplePath` per channel. |
 | `flp_set_tempo(path, bpm, out_path?)` | Set tempo (BPM). Edits in place, or writes a copy to `out_path`. |
 | `flp_set_metadata(path, title?, artists?, genre?, comments?, out_path?)` | Set metadata; only the fields you pass change. |
 | `flp_rename_channel(path, index, name, out_path?)` | Rename a channel by 0-based index. |

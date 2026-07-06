@@ -89,5 +89,59 @@ def test_rename_channel_out_of_range(tmp_path: Path) -> None:
         pyflp_route.rename_channel(str(out), 9999, "nope")
 
 
+def _dummy_wavs(tmp_path: Path, n: int) -> list[str]:
+    """n placeholder .wav paths (load_samples only records the path, never reads audio)."""
+    out = []
+    for i in range(n):
+        p = tmp_path / f"stem_{i}.wav"
+        p.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+        out.append(str(p))
+    return out
+
+
+def test_load_samples_one_channel_per_file(tmp_path: Path) -> None:
+    wavs = _dummy_wavs(tmp_path, 4)
+    out = tmp_path / "bank.flp"
+    result = pyflp_route.load_samples(str(out), wavs, title="Bank", tempo=110.0)
+    assert out.exists()
+    assert result["channel_count"] == 4
+    assert result["tempo"] == pytest.approx(110.0)
+    assert result["title"] == "Bank"
+
+
+def test_load_samples_points_channels_at_files(tmp_path: Path) -> None:
+    import pyflp
+
+    from fl_studio_mcp import _compat
+
+    _compat.install()
+    wavs = _dummy_wavs(tmp_path, 3)
+    out = tmp_path / "b.flp"
+    pyflp_route.load_samples(
+        str(out), [{"path": w, "name": f"stem{i}"} for i, w in enumerate(wavs)]
+    )
+    channels = list(pyflp.parse(out).channels)
+    assert len(channels) == 3
+    assert [c.name for c in channels] == ["stem0", "stem1", "stem2"]
+    assert [str(c.sample_path) for c in channels] == wavs
+
+
+def test_load_samples_single_file(tmp_path: Path) -> None:
+    out = tmp_path / "one.flp"
+    result = pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 1))
+    assert result["channel_count"] == 1
+
+
+def test_load_samples_default_name_is_stem(tmp_path: Path) -> None:
+    out = tmp_path / "n.flp"
+    result = pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 2))
+    assert result["channels"] == ["stem_0", "stem_1"]
+
+
+def test_load_samples_empty_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        pyflp_route.load_samples(str(tmp_path / "x.flp"), [])
+
+
 def test_status_reports_ready() -> None:
     assert "READY" in pyflp_route.status()
