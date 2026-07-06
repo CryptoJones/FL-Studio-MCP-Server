@@ -143,5 +143,50 @@ def test_load_samples_empty_raises(tmp_path: Path) -> None:
         pyflp_route.load_samples(str(tmp_path / "x.flp"), [])
 
 
+def _playlist_clips(flp_path: Path) -> list[tuple[int, int]]:
+    import pyflp
+
+    from fl_studio_mcp import _compat
+
+    _compat.install()
+    project = pyflp.parse(flp_path)
+    clips: list[tuple[int, int]] = []
+    try:
+        for a in project.arrangements:
+            for t in a.tracks:
+                for it in t:
+                    if type(it).__name__ == "ChannelPLItem":
+                        clips.append((it["position"], it["item_index"]))
+    except Exception:
+        pass
+    return clips
+
+
+def test_load_samples_arrange_staggers_clips(tmp_path: Path) -> None:
+    import pyflp
+
+    wavs = _dummy_wavs(tmp_path, 3)
+    out = tmp_path / "arr.flp"
+    pyflp_route.load_samples(str(out), wavs, tempo=120.0, arrange=True, stagger_bars=8)
+    ppq = pyflp.parse(out).ppq
+    clips = _playlist_clips(out)
+    assert len(clips) == 3
+    assert sorted(p for p, _ in clips) == [0, 8 * 4 * ppq, 16 * 4 * ppq]  # staggered every 8 bars
+
+
+def test_load_samples_arrange_stack_all_at_bar1(tmp_path: Path) -> None:
+    out = tmp_path / "stack.flp"
+    pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 3), arrange=True, stagger_bars=0)
+    clips = _playlist_clips(out)
+    assert len(clips) == 3
+    assert all(pos == 0 for pos, _ in clips)  # all at bar 1
+
+
+def test_load_samples_no_arrange_leaves_timeline_empty(tmp_path: Path) -> None:
+    out = tmp_path / "na.flp"
+    pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 2))
+    assert _playlist_clips(out) == []
+
+
 def test_status_reports_ready() -> None:
     assert "READY" in pyflp_route.status()

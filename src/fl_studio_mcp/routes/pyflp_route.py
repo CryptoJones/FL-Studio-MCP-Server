@@ -126,6 +126,8 @@ def load_samples(
     artists: str | None = None,
     genre: str | None = None,
     comments: str | None = None,
+    arrange: bool = False,
+    stagger_bars: int = 8,
 ) -> dict[str, Any]:
     """Create a new ``.flp`` with **one Sampler channel per audio file** in ``samples``.
 
@@ -135,6 +137,11 @@ def load_samples(
     points at its file (PyFLP edits existing events but can't create channels from its public
     model — so we clone at the event level). Channel names + tempo/metadata are set via the
     model in a second pass. Opens straight into FL with every clip loaded in the Channel Rack.
+
+    If ``arrange`` is true, a third pass also drops each channel as a full-length **Audio Clip
+    on the Playlist timeline**, one per track, each offset ``stagger_bars`` bars after the last
+    (``stagger_bars=0`` stacks them all at bar 1). Clip positions/lengths are computed in PPQ
+    ticks at the project tempo — so the project opens already arranged, not just loaded.
     """
     import copy as _copy
 
@@ -202,6 +209,46 @@ def load_samples(
     if comments is not None:
         project.comments = comments
     pyflp.save(project, out)
+
+    # Pass 3 (optional) — drop each channel as an Audio Clip on the Playlist timeline.
+    if arrange:
+        import contextlib as _cl
+        import struct as _st
+        import wave as _wave
+
+        from pyflp.arrangement import ArrangementID, PlaylistEvent
+
+        project = pyflp.parse(out)
+        ppq = project.ppq or 96
+        bpm = float(tempo) if tempo is not None else float(project.tempo or 120.0)
+
+        def _dur_sec(path: str) -> float:
+            try:
+                with _cl.closing(_wave.open(str(Path(path).expanduser()))) as w:
+                    return w.getnframes() / float(w.getframerate())
+            except Exception:
+                return 4.0 * 4 * 60.0 / bpm  # fallback ~4 bars if not a readable WAV
+
+        def _plitem(position: int, channel_iid: int, length: int, track: int) -> bytes:
+            # 32-byte FL ChannelPLItem: position, pattern_base=20480, item_index=channel iid,
+            # length, track_rvidx=499-track, group, const flags, start/end offset = -1.0 (whole clip).
+            return _st.pack(
+                "<IHHIHH2sH4sff",
+                position, 20480, channel_iid, length, 499 - track, 0,
+                b"\x78\x00", 64, b"\x40\x64\x80\x80", -1.0, -1.0,
+            )
+
+        step = int(stagger_bars) * 4 * ppq
+        data = b"".join(
+            _plitem(i * step, i, round(_dur_sec(it["path"]) * bpm / 60.0 * ppq), i)
+            for i, it in enumerate(items)
+        )
+        events = project.events
+        idx = next(i for i, e in enumerate(list(events)) if str(e.id) == "ArrangementID.Playlist")
+        events.remove(ArrangementID.Playlist)
+        events.insert(idx, PlaylistEvent(ArrangementID.Playlist, data))
+        pyflp.save(project, out)
+
     return info(str(out))
 
 
@@ -307,11 +354,15 @@ def register(mcp: Any) -> None:
         artists: str | None = None,
         genre: str | None = None,
         comments: str | None = None,
+        arrange: bool = False,
+        stagger_bars: int = 8,
     ) -> str:
-        """Create an .flp with ONE Sampler channel per audio file — every clip loaded in the Channel Rack.
+        """Create an .flp with ONE Sampler channel per audio file — loaded in the Channel Rack, optionally arranged.
 
         Clones FL's Empty-template Sampler once per file and points each channel at its sample,
-        then names the channels and sets tempo/metadata. Opens straight into FL, ready to arrange.
+        then names the channels and sets tempo/metadata. If arrange=True it also drops each stem
+        as a full-length Audio Clip on the Playlist timeline (one per track, staggered), so the
+        project opens already arranged.
 
         Args:
             out_path: Where to write the new .flp.
@@ -321,6 +372,8 @@ def register(mcp: Any) -> None:
             artists: Artist/author name.
             genre: Genre.
             comments: Project comments.
+            arrange: If true, also place each stem as an Audio Clip on the Playlist timeline.
+            stagger_bars: Bars to offset each successive clip when arranging (0 = all stacked at bar 1).
         """
         return json.dumps(
             load_samples(
@@ -331,6 +384,8 @@ def register(mcp: Any) -> None:
                 artists=artists,
                 genre=genre,
                 comments=comments,
+                arrange=arrange,
+                stagger_bars=stagger_bars,
             ),
             indent=2,
         )
