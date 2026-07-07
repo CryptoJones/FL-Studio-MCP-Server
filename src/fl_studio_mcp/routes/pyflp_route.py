@@ -298,6 +298,7 @@ _EV_TEMPO = 156           # u32  BPM * 1000
 _EV_TITLE = 194           # text project title
 _EV_SAMPLE_PATH = 196     # text channel sample path
 _EV_CHANNEL_NAME = 203    # text channel display name
+_EV_CHANNEL_LEVELS = 219  # data 24B: u32[6]; field 1 = volume 0..12800 (12800=100%, default 10000=78.125%)
 _EV_PLAYLIST = 233        # data playlist item records
 
 # FL 2025 (observed at build 5055) writes these ids as 1-BYTE events even though
@@ -502,7 +503,7 @@ def read_playlist(path: str) -> dict[str, Any]:
     playlist_data = b""
     for eid, val, data in events:
         if eid == _EV_CHANNEL_NEW:
-            cur = {"iid": int(val), "type": None, "sample_path": None, "name": None}
+            cur = {"iid": int(val), "type": None, "sample_path": None, "name": None, "volume": None}
             chans.append(cur)
         elif cur is not None and eid == _EV_CHANNEL_TYPE:
             cur["type"] = int(val)
@@ -510,6 +511,11 @@ def read_playlist(path: str) -> dict[str, Any]:
             cur["name"] = _utf16(data)
         elif cur is not None and eid == _EV_SAMPLE_PATH and data:
             cur["sample_path"] = _utf16(data)
+        elif cur is not None and eid == _EV_CHANNEL_LEVELS and data and len(data) >= 8:
+            import struct as _st
+
+            raw_vol = _st.unpack_from("<I", data, 4)[0]  # 0..12800; 12800 = 100%
+            cur["volume"] = round(raw_vol / 128.0, 2)    # store as percent
         elif eid == _EV_PLAYLIST and data and len(data) > len(playlist_data):
             playlist_data = data  # largest playlist event = the arrangement
     by_iid = {ch["iid"]: ch for ch in chans}
@@ -612,6 +618,13 @@ def diff(path_a: str, path_b: str) -> dict[str, Any]:
     ]
     if renames:
         result["channels_renamed"] = renames
+    volumes = [
+        {"iid": x["iid"], "name": y["name"], "a_percent": x["volume"], "b_percent": y["volume"]}
+        for x, y in zip(a["channels"], b["channels"])
+        if x["iid"] == y["iid"] and x["volume"] != y["volume"]
+    ]
+    if volumes:
+        result["channel_volumes_changed"] = volumes
     return result
 
 
