@@ -144,21 +144,38 @@ def test_load_samples_empty_raises(tmp_path: Path) -> None:
 
 
 def _playlist_clips(flp_path: Path) -> list[tuple[int, int]]:
+    """Return (position, item_index/iid) for each playlist audio clip.
+
+    FL Studio 2025 stores each item as an 80-byte record that PyFLP's own model
+    cannot parse, so read the raw ``ArrangementID.Playlist`` event bytes and split
+    them into 80-byte records directly. Event layout: 1-byte id, LEB128 size, data.
+    """
+    import struct
+
     import pyflp
 
     from fl_studio_mcp import _compat
 
     _compat.install()
     project = pyflp.parse(flp_path)
+    data = b""
+    for e in project.events:
+        if str(e.id) == "ArrangementID.Playlist":
+            raw = bytes(e)
+            i, size, shift = 1, 0, 0
+            while True:
+                b = raw[i]
+                i += 1
+                size |= (b & 0x7F) << shift
+                if not b & 0x80:
+                    break
+                shift += 7
+            data = raw[i : i + size]
+            break
     clips: list[tuple[int, int]] = []
-    try:
-        for a in project.arrangements:
-            for t in a.tracks:
-                for it in t:
-                    if type(it).__name__ == "ChannelPLItem":
-                        clips.append((it["position"], it["item_index"]))
-    except Exception:
-        pass
+    for o in range(0, len(data) - 79, 80):  # position @0 (u32), item_index/iid @6 (u16)
+        position, _base, item_index = struct.unpack_from("<IHH", data, o)
+        clips.append((position, item_index))
     return clips
 
 
@@ -186,6 +203,63 @@ def test_load_samples_no_arrange_leaves_timeline_empty(tmp_path: Path) -> None:
     out = tmp_path / "na.flp"
     pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 2))
     assert _playlist_clips(out) == []
+
+
+def test_arrange_writes_fl2025_audio_clip_records(tmp_path: Path) -> None:
+    """arrange=True must emit FL 2025's 80-byte playlist records that reference Audio Clip
+    channels (ChannelID.Type == 4), one per track, with item_index = channel iid and
+    track_rvidx = 499 - track. This is the format FL 2025 actually loads (verified against
+    FL-native saves); any other record size makes FL drop every clip after the first."""
+    import struct
+
+    import pyflp
+
+    from fl_studio_mcp import _compat
+
+    _compat.install()
+    out = tmp_path / "arr80.flp"
+    pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 3), tempo=120.0, arrange=True, stagger_bars=8)
+
+    project = pyflp.parse(out)
+    ppq = project.ppq
+    # every channel is promoted to an Audio Clip channel (Type 4) so the playlist can reference it
+    assert [int(e.value) for e in project.events if str(e.id) == "ChannelID.Type"] == [4, 4, 4]
+    iids = [int(e.value) for e in project.events if str(e.id) == "ChannelID.New"]
+
+    # raw Playlist event must be exactly 3 x 80-byte records
+    raw = b""
+    for e in project.events:
+        if str(e.id) == "ArrangementID.Playlist":
+            b, i, size, shift = bytes(e), 1, 0, 0
+            while True:
+                x = b[i]
+                i += 1
+                size |= (x & 0x7F) << shift
+                if not x & 0x80:
+                    break
+                shift += 7
+            raw = b[i : i + size]
+            break
+    assert len(raw) == 3 * 80
+
+    for k in range(3):
+        pos, base, item, length, trk, grp = struct.unpack_from("<IHHIHH", raw, k * 80)
+        assert base == 20480          # pattern_base marker, always
+        assert item == iids[k]        # references the channel iid...
+        assert item < 20480           # ...as an audio clip, not a pattern clip
+        assert trk == 499 - k         # track_rvidx = 499 - track index
+        assert pos == k * 8 * 4 * ppq  # staggered stagger_bars apart
+
+
+def test_arrange_stack_positions_all_zero(tmp_path: Path) -> None:
+    """stagger_bars=0 stacks every clip at bar 1 (position 0), still one 80-byte record each."""
+    import struct
+
+    out = tmp_path / "stack80.flp"
+    pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 4), arrange=True, stagger_bars=0)
+    clips = _playlist_clips(out)
+    assert len(clips) == 4
+    assert all(pos == 0 for pos, _ in clips)
 
 
 def test_status_reports_ready() -> None:
