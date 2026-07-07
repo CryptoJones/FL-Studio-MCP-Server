@@ -464,3 +464,41 @@ def test_diff_reports_channel_volume_change(tmp_path: Path) -> None:
     ]
     same = pyflp_route.diff(str(a), str(a))
     assert "channel_volumes_changed" not in same
+
+
+def test_diff_reports_clip_mute(tmp_path: Path) -> None:
+    """Playlist clip mute = item_flags bit 0x2000, pinned in a live blind test
+    (a muted clip keeps position/length/track and was invisible to the old key)."""
+    import struct
+
+    def flp_with_flags(flags: int) -> Path:
+        def rec(position: int, item: int, length: int, track: int, fl: int) -> bytes:
+            core = struct.pack(
+                "<IHHIHH2sH4sff",
+                position, 20480, item, length, 499 - track, 0,
+                b"\x78\x00", fl, b"\x40\x64\x80\x80", -1.0, -1.0,
+            )
+            return core + struct.pack("<I", 0x10) + b"\x00" * 44
+        ev = b""
+        ev += bytes([156]) + struct.pack("<I", 110000)
+        ev += bytes([64]) + struct.pack("<H", 0)
+        ev += bytes([21, 4])
+        name = "CHOP".encode("utf-16-le") + b"\x00\x00"
+        ev += bytes([203, len(name)]) + name
+        r = rec(9900, 0, 120, 6, flags)
+        ev += bytes([233, len(r)]) + r
+        hdr = b"FLhd" + struct.pack("<I", 6) + struct.pack("<hHH", 0, 1, 96)
+        p = tmp_path / f"flags_{flags:x}.flp"
+        p.write_bytes(hdr + b"FLdt" + struct.pack("<I", len(ev)) + ev)
+        return p
+
+    a = flp_with_flags(0x0040)           # normal
+    b = flp_with_flags(0x0040 | 0x2000)  # muted
+    pl = pyflp_route.read_playlist(str(b))
+    assert pl["clips"][0]["muted"] is True
+    d = pyflp_route.diff(str(a), str(b))
+    assert len(d["changed"]) == 1
+    assert d["changed"][0]["fields"] == ["muted"]
+    assert d["changed"][0]["old"]["muted"] is False
+    assert d["changed"][0]["new"]["muted"] is True
+    assert d["added"] == [] and d["removed"] == []
