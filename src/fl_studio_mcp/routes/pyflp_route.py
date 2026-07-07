@@ -464,6 +464,7 @@ def _parse_record(rec: bytes) -> dict[str, Any]:
         "track": 499 - rvidx,
         "group": group,
         "flags": flags,
+        "muted": bool(flags & 0x2000),  # clip-mute bit, pinned in a live blind test
         "start_offset": start_offset,
         "end_offset": end_offset,
         "whole_clip": start_offset == -1.0 and end_offset == -1.0,
@@ -557,8 +558,8 @@ def diff(path_a: str, path_b: str) -> dict[str, Any]:
 
     a, b = read_playlist(path_a), read_playlist(path_b)
 
-    def key(c: dict[str, Any]) -> tuple[int, int, int, int]:
-        return (c["item_index"], c["position"], c["length"], c["track"])
+    def key(c: dict[str, Any]) -> tuple[int, int, int, int, bool]:
+        return (c["item_index"], c["position"], c["length"], c["track"], c["muted"])
 
     label: dict[int, str] = {}
     for c in a["clips"] + b["clips"]:
@@ -583,15 +584,15 @@ def diff(path_a: str, path_b: str) -> dict[str, Any]:
         for old, new in zip(la, lb):
             fields = [
                 name
-                for name, i in (("position", 1), ("length", 2), ("track", 3))
+                for name, i in (("position", 1), ("length", 2), ("track", 3), ("muted", 4))
                 if old[i] != new[i]
             ]
             changed.append(
                 {
                     "item": label[item],
                     "item_index": item,
-                    "old": {"position": old[1], "length": old[2], "track": old[3]},
-                    "new": {"position": new[1], "length": new[2], "track": new[3]},
+                    "old": {"position": old[1], "length": old[2], "track": old[3], "muted": old[4]},
+                    "new": {"position": new[1], "length": new[2], "track": new[3], "muted": new[4]},
                     "fields": fields,
                 }
             )
