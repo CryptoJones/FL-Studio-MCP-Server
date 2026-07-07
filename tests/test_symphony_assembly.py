@@ -83,32 +83,28 @@ def test_symphony_assembles_multitrack_flp(tmp_path: Path) -> None:
 
 
 def test_symphony_arrange_places_one_staggered_clip_per_stem(tmp_path: Path) -> None:
-    """arrange=True drops one Audio Clip per stem, staggered every `stagger_bars`."""
-    import pyflp
+    """arrange=True drops one Audio Clip per stem, staggered every `stagger_bars`.
 
-    from fl_studio_mcp import _compat
-
-    _compat.install()
-
+    Inspected via our own ``read_playlist`` — PyFLP's arrangement model cannot
+    parse the FL 2025 80-byte playlist records this writer (correctly) emits.
+    """
     stems = _stem_files(tmp_path, SYMPHONY_STEMS)
     out = tmp_path / "dark_symphony_arranged.flp"
     pyflp_route.load_samples(
         str(out), stems, tempo=SYMPHONY_TEMPO, arrange=True, stagger_bars=8
     )
 
-    project = pyflp.parse(out)
-    ppq = project.ppq
-    clips: list[int] = []
-    for a in project.arrangements:
-        for t in a.tracks:
-            for it in t:
-                if type(it).__name__ == "ChannelPLItem":
-                    clips.append(it["position"])
+    pl = pyflp_route.read_playlist(str(out))
+    ppq = pl["ppq"]
+    clips = [c for c in pl["clips"] if c["kind"] == "channel"]
 
     assert len(clips) == len(SYMPHONY_STEMS)  # one clip per stem on the timeline
     # staggered 8 bars apart (bar = 4 beats = 4*ppq ticks): 0, 8*4*ppq, 16*4*ppq, ...
     expected = [i * 8 * 4 * ppq for i in range(len(SYMPHONY_STEMS))]
-    assert sorted(clips) == expected
+    assert sorted(c["position"] for c in clips) == expected
+    # every clip resolves to its stem's channel, in stagger order
+    by_pos = sorted(clips, key=lambda c: c["position"])
+    assert [c["channel_name"] for c in by_pos] == SYMPHONY_STEMS
 
 
 def test_symphony_reparses_via_info(tmp_path: Path) -> None:
