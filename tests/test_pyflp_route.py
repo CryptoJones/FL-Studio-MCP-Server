@@ -432,3 +432,35 @@ def test_read_playlist_never_guesses_tempo(tmp_path: Path) -> None:
     pl = pyflp_route.read_playlist(str(p))
     assert pl["tempo"] is None
     assert pl["clip_count"] == 0
+
+
+def test_diff_reports_channel_volume_change(tmp_path: Path) -> None:
+    """Channel volume lives in event 219 (u32 field 1, 0..12800 where 12800=100%);
+    the diff must surface knob turns as channel_volumes_changed — discovered live
+    when a blind-test volume change was invisible at the clip layer."""
+    import struct
+
+    def flp_with_volume(vol_raw: int) -> Path:
+        ev = b""
+        ev += bytes([156]) + struct.pack("<I", 110000)      # tempo
+        ev += bytes([64]) + struct.pack("<H", 0)            # channel iid 0
+        ev += bytes([21, 4])                                # type 4
+        name = "BASS".encode("utf-16-le") + b"\x00\x00"
+        ev += bytes([203, len(name)]) + name
+        levels = struct.pack("<6I", 6400, vol_raw, 0, 256, 0, 0)
+        ev += bytes([219, len(levels)]) + levels
+        hdr = b"FLhd" + struct.pack("<I", 6) + struct.pack("<hHH", 0, 1, 96)
+        p = tmp_path / f"vol_{vol_raw}.flp"
+        p.write_bytes(hdr + b"FLdt" + struct.pack("<I", len(ev)) + ev)
+        return p
+
+    a = flp_with_volume(10000)  # FL's 78.125% default
+    b = flp_with_volume(12800)  # 100%
+    pl = pyflp_route.read_playlist(str(a))
+    assert pl["channels"][0]["volume"] == pytest.approx(78.12, abs=0.01)
+    d = pyflp_route.diff(str(a), str(b))
+    assert d["channel_volumes_changed"] == [
+        {"iid": 0, "name": "BASS", "a_percent": 78.12, "b_percent": 100.0}
+    ]
+    same = pyflp_route.diff(str(a), str(a))
+    assert "channel_volumes_changed" not in same
