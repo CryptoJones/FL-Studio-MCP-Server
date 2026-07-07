@@ -284,7 +284,110 @@ def load_samples(
 
 # --------------------------------------------------------------------------- #
 # Playlist read-back (the FL -> Claude half of the round-trip)
+#
+# The read path deliberately does NOT go through PyFLP's event parser: FL 2025
+# (build ~5055) saves break its size-class assumption (see _FL2025_BYTE_QUIRKS),
+# desyncing the stream so that e.g. the tempo event becomes unreadable. Instead
+# we walk the raw FLdt bytes ourselves and take just the events we understand.
 # --------------------------------------------------------------------------- #
+
+# Event ids read from the raw stream (same ids PyFLP names, minus the enum).
+_EV_CHANNEL_NEW = 64      # u16  channel iid, starts a channel block
+_EV_CHANNEL_TYPE = 21     # u8   4 = Audio Clip channel
+_EV_TEMPO = 156           # u32  BPM * 1000
+_EV_TITLE = 194           # text project title
+_EV_SAMPLE_PATH = 196     # text channel sample path
+_EV_CHANNEL_NAME = 203    # text channel display name
+_EV_PLAYLIST = 233        # data playlist item records
+
+# FL 2025 (observed at build 5055) writes these ids as 1-BYTE events even though
+# the classic .flp rule puts ids 128-191 in the 4-byte class. Parsing them as
+# 4 bytes shifts the stream and turns everything after (tempo included) into
+# gibberish — the bug that made a generated 110 BPM project read back as "120"
+# (the old reader's silent default) after a no-edit FL save.
+_FL2025_BYTE_QUIRKS = frozenset({172})
+
+
+def _utf16(data: bytes) -> str:
+    return data.decode("utf-16-le", "ignore").rstrip("\x00")
+
+
+def _walk_flp(raw: bytes, byte_quirks: frozenset[int]) -> list[tuple[int, int, bytes | None]]:
+    """Walk an .flp's FLdt event stream: yields (id, value, data-or-None) triples.
+
+    Size classes: id < 64 -> u8, < 128 -> u16, < 192 -> u32, else LEB128-sized
+    data — except ids in ``byte_quirks``, which read as u8 regardless of class.
+    Raises on structural overrun (reading past end of stream).
+    """
+    import struct as _st
+
+    if raw[:4] != b"FLhd":
+        raise ValueError("not an FLP file (missing FLhd)")
+    hlen = _st.unpack_from("<I", raw, 4)[0]
+    o = 8 + hlen
+    if raw[o : o + 4] != b"FLdt":
+        raise ValueError("not an FLP file (missing FLdt)")
+    o += 8
+    events: list[tuple[int, int, bytes | None]] = []
+    n = len(raw)
+    while o < n:
+        eid = raw[o]
+        o += 1
+        if eid in byte_quirks or eid < 64:
+            events.append((eid, raw[o], None))
+            o += 1
+        elif eid < 128:
+            events.append((eid, _st.unpack_from("<H", raw, o)[0], None))
+            o += 2
+        elif eid < 192:
+            events.append((eid, _st.unpack_from("<I", raw, o)[0], None))
+            o += 4
+        else:
+            size, shift = 0, 0
+            while True:
+                b = raw[o]
+                o += 1
+                size |= (b & 0x7F) << shift
+                if not b & 0x80:
+                    break
+                shift += 7
+            events.append((eid, size, raw[o : o + size]))
+            o += size
+        if o > n:
+            raise ValueError("event stream overruns file end")
+    return events
+
+
+def _flp_events(path: str | Path) -> tuple[int, list[tuple[int, int, bytes | None]]]:
+    """Parse an .flp's raw events, auto-detecting the FL 2025 size-class quirk.
+
+    Returns (ppq, events). Tries the classic rules first; if the result fails
+    plausibility (channel-block count must match the header's channel count and
+    the tempo event must be visible), retries with the FL 2025 quirk set.
+    """
+    import struct as _st
+
+    raw = Path(path).expanduser().read_bytes()
+    n_channels = _st.unpack_from("<H", raw, 10)[0]
+    ppq = _st.unpack_from("<H", raw, 12)[0] or 96
+
+    best: list[tuple[int, int, bytes | None]] | None = None
+    for quirks in (frozenset(), _FL2025_BYTE_QUIRKS):
+        try:
+            events = _walk_flp(raw, quirks)
+        except (ValueError, IndexError):
+            continue
+        found_channels = sum(1 for e, _v, _d in events if e == _EV_CHANNEL_NEW)
+        has_tempo = any(e == _EV_TEMPO for e, _v, _d in events)
+        if found_channels == n_channels and has_tempo:
+            return ppq, events
+        if best is None:
+            best = events
+    if best is None:
+        raise ValueError(f"could not parse event stream of {path}")
+    return ppq, best  # best effort — caller must tolerate missing tempo
+
+
 def _raw_playlist(project: Any) -> bytes:
     """Raw data bytes of the ``ArrangementID.Playlist`` event (empty if none).
 
@@ -382,44 +485,41 @@ def read_playlist(path: str) -> dict[str, Any]:
 
     The read half of the FL round-trip: hand FL a generated project, let a human
     rearrange it in the GUI and save, then call this to see the arrangement as
-    data (ticks AND seconds). Handles FL 2025's variable-length records (80-byte
-    canonical, 100/120 for GUI-edited clips).
+    data (ticks AND seconds). Independent of PyFLP's parser — walks the raw event
+    stream, so FL 2025 saves (whose size-class quirk desyncs PyFLP) read cleanly.
+    ``tempo`` is None when the file genuinely doesn't yield one (never guessed).
     """
     p = Path(path).expanduser()
-    project = pyflp.parse(p)
-    ppq = int(project.ppq or 96)
-    bpm = float(project.tempo or 120.0)
-    sec_per_tick = 60.0 / (bpm * ppq)
+    ppq, events = _flp_events(p)
+    tempo_raw = next((v for e, v, _d in events if e == _EV_TEMPO), None)
+    bpm = tempo_raw / 1000.0 if tempo_raw is not None else None
+    sec_per_tick = 60.0 / (bpm * ppq) if bpm else None
+    title = next((_utf16(d) for e, _v, d in events if e == _EV_TITLE and d), None)
 
-    # Rack-order channel facts straight from the event stream.
+    # Rack-order channel facts: each _EV_CHANNEL_NEW starts a block.
     chans: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
-    for e in project.events:
-        sid = str(e.id)
-        if sid == "ChannelID.New":
-            cur = {"iid": int(e.value), "type": None, "sample_path": None, "name": None}
+    playlist_data = b""
+    for eid, val, data in events:
+        if eid == _EV_CHANNEL_NEW:
+            cur = {"iid": int(val), "type": None, "sample_path": None, "name": None}
             chans.append(cur)
-        elif cur is not None and sid == "ChannelID.Type":
-            cur["type"] = int(e.value)
-        elif cur is not None and sid == "ChannelID.SamplePath":
-            try:
-                cur["sample_path"] = str(e.value).rstrip("\x00")
-            except Exception:
-                cur["sample_path"] = None
-    try:
-        names = [c.name for c in project.channels]
-    except NoModelsFound:
-        names = []
-    for i, ch in enumerate(chans):
-        if i < len(names):
-            ch["name"] = names[i]
+        elif cur is not None and eid == _EV_CHANNEL_TYPE:
+            cur["type"] = int(val)
+        elif cur is not None and eid == _EV_CHANNEL_NAME and data:
+            cur["name"] = _utf16(data)
+        elif cur is not None and eid == _EV_SAMPLE_PATH and data:
+            cur["sample_path"] = _utf16(data)
+        elif eid == _EV_PLAYLIST and data and len(data) > len(playlist_data):
+            playlist_data = data  # largest playlist event = the arrangement
     by_iid = {ch["iid"]: ch for ch in chans}
 
     clips: list[dict[str, Any]] = []
-    for rec in _split_records(_raw_playlist(project)):
+    for rec in _split_records(playlist_data):
         d = _parse_record(rec)
-        d["position_sec"] = round(d["position"] * sec_per_tick, 6)
-        d["length_sec"] = round(d["length"] * sec_per_tick, 6)
+        if sec_per_tick is not None:
+            d["position_sec"] = round(d["position"] * sec_per_tick, 6)
+            d["length_sec"] = round(d["length"] * sec_per_tick, 6)
         if d["kind"] == "channel":
             ch = by_iid.get(d["channel_iid"])
             if ch is not None:
@@ -430,7 +530,7 @@ def read_playlist(path: str) -> dict[str, Any]:
     clips.sort(key=lambda c: (c["position"], c["track"]))
     return {
         "path": str(p),
-        "title": project.title,
+        "title": title,
         "tempo": bpm,
         "ppq": ppq,
         "channel_count": len(chans),

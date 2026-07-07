@@ -371,3 +371,64 @@ def test_diff_reports_tempo_change(tmp_path: Path) -> None:
     pyflp_route.load_samples(str(b), wavs, tempo=140.0, arrange=True)
     d = pyflp_route.diff(str(a), str(b))
     assert d["tempo_changed"] == {"a": 110.0, "b": 140.0}
+
+
+def _fl2025_style_flp(tmp_path: Path) -> Path:
+    """Craft a minimal .flp using FL 2025 build-5055 conventions: the id-172
+    1-byte quirk event early in the stream (which desyncs classic-rule parsers),
+    then tempo/channel/playlist events."""
+    import struct
+
+    def text(eid: int, s: str) -> bytes:
+        data = s.encode("utf-16-le") + b"\x00\x00"
+        return bytes([eid, len(data)]) + data  # sizes < 128: single LEB byte
+
+    ev = b""
+    ev += bytes([199, 11]) + b"25.2.5.5055"          # version (ascii text)
+    ev += bytes([159]) + struct.pack("<I", 5055)      # FLBuild (u32)
+    ev += bytes([28, 1])                              # registered (u8)
+    ev += bytes([172, 1])                             # THE QUIRK: 1-byte event
+    ev += bytes([1, 0])                               # u8 event
+    ev += text(192, "FL Studio 25.2.5.5055.5055")     # version text (utf-16)
+    ev += bytes([156]) + struct.pack("<I", 123000)    # tempo = 123 BPM
+    ev += text(194, "Quirk Test")                     # title
+    ev += bytes([64]) + struct.pack("<H", 0)          # channel iid 0
+    ev += bytes([21, 4])                              # channel type 4
+    ev += text(203, "CHAN A")                         # channel name
+    ev += text(196, "/tmp/a.wav")                     # sample path
+    rec = _record(384, 0, 768, 2)
+    ev += bytes([233, len(rec)]) + rec                # playlist, one clip
+
+    hdr = b"FLhd" + struct.pack("<I", 6) + struct.pack("<hHH", 0, 1, 96)
+    raw = hdr + b"FLdt" + struct.pack("<I", len(ev)) + ev
+    p = tmp_path / "fl2025_quirk.flp"
+    p.write_bytes(raw)
+    return p
+
+
+def test_read_playlist_fl2025_quirk(tmp_path: Path) -> None:
+    """FL 2025 saves put a 1-byte id-172 event where classic rules expect 4 bytes;
+    the reader must auto-detect this and still find tempo/title/clips (this exact
+    desync once made a 110 BPM project read back as a phantom '120')."""
+    p = _fl2025_style_flp(tmp_path)
+    pl = pyflp_route.read_playlist(str(p))
+    assert pl["tempo"] == pytest.approx(123.0)
+    assert pl["title"] == "Quirk Test"
+    assert pl["channel_count"] == 1
+    assert pl["clip_count"] == 1
+    c = pl["clips"][0]
+    assert (c["position"], c["length"], c["track"]) == (384, 768, 2)
+    assert c["channel_name"] == "CHAN A"
+
+
+def test_read_playlist_never_guesses_tempo(tmp_path: Path) -> None:
+    """A file with no readable tempo reports tempo=None — never a silent default."""
+    import struct
+
+    ev = bytes([64]) + struct.pack("<H", 0)  # one channel, no tempo event
+    hdr = b"FLhd" + struct.pack("<I", 6) + struct.pack("<hHH", 0, 1, 96)
+    p = tmp_path / "notempo.flp"
+    p.write_bytes(hdr + b"FLdt" + struct.pack("<I", len(ev)) + ev)
+    pl = pyflp_route.read_playlist(str(p))
+    assert pl["tempo"] is None
+    assert pl["clip_count"] == 0
