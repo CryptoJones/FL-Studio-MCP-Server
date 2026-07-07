@@ -264,3 +264,110 @@ def test_arrange_stack_positions_all_zero(tmp_path: Path) -> None:
 
 def test_status_reports_ready() -> None:
     assert "READY" in pyflp_route.status()
+
+
+# --------------------------------------------------------------------------- #
+# read_playlist / diff — the FL -> Claude half of the round-trip
+# --------------------------------------------------------------------------- #
+def _record(position: int, item: int, length: int, track: int, size: int = 80) -> bytes:
+    """Craft a playlist item record like load_samples' writer, padded to ``size``."""
+    import struct
+
+    core = struct.pack(
+        "<IHHIHH2sH4sff",
+        position, 20480, item, length, 499 - track, 0,
+        b"\x78\x00", 0x40, b"\x40\x64\x80\x80", -1.0, -1.0,
+    )
+    trailer = struct.pack("<I", 0x10 + track) + b"\x00" * (size - 36)
+    return core + trailer
+
+
+def test_split_records_canonical_80(tmp_path: Path) -> None:
+    data = _record(0, 0, 384, 0) + _record(384, 1, 384, 1) + _record(768, 2, 384, 2)
+    recs = pyflp_route._split_records(data)
+    assert [len(r) for r in recs] == [80, 80, 80]
+
+
+def test_split_records_variable_lengths() -> None:
+    """FL grows GUI-edited clips to 100/120 bytes — the splitter must re-align."""
+    data = (
+        _record(0, 0, 384, 0, size=80)
+        + _record(384, 1, 384, 1, size=100)
+        + _record(768, 2, 384, 2, size=120)
+        + _record(1152, 0, 192, 0, size=80)
+    )
+    recs = pyflp_route._split_records(data)
+    assert [len(r) for r in recs] == [80, 100, 120, 80]
+    parsed = [pyflp_route._parse_record(r) for r in recs]
+    assert [p["position"] for p in parsed] == [0, 384, 768, 1152]
+    assert [p["track"] for p in parsed] == [0, 1, 2, 0]
+    assert [p["edited_in_fl"] for p in parsed] == [False, True, True, False]
+
+
+def test_parse_record_pattern_clip() -> None:
+    rec = _record(96, 20480 + 3, 768, 5)
+    d = pyflp_route._parse_record(rec)
+    assert d["kind"] == "pattern"
+    assert d["pattern"] == 3
+    assert d["track"] == 5
+
+
+def test_read_playlist_roundtrips_arrange(tmp_path: Path) -> None:
+    import pyflp
+
+    wavs = _dummy_wavs(tmp_path, 3)
+    out = tmp_path / "rp.flp"
+    pyflp_route.load_samples(str(out), wavs, tempo=120.0, arrange=True, stagger_bars=8)
+    ppq = pyflp.parse(out).ppq
+    pl = pyflp_route.read_playlist(str(out))
+    assert pl["clip_count"] == 3
+    assert pl["tempo"] == pytest.approx(120.0)
+    assert [c["position"] for c in pl["clips"]] == [0, 8 * 4 * ppq, 16 * 4 * ppq]
+    assert [c["track"] for c in pl["clips"]] == [0, 1, 2]
+    assert all(c["kind"] == "channel" for c in pl["clips"])
+    assert all(c["channel_type"] == 4 for c in pl["clips"])
+    assert [c["channel_name"] for c in pl["clips"]] == ["stem_0", "stem_1", "stem_2"]
+    # seconds math: ticks / (bpm/60*ppq)
+    assert pl["clips"][1]["position_sec"] == pytest.approx(8 * 4 * ppq / (120.0 / 60.0 * ppq))
+
+
+def test_read_playlist_empty_timeline(tmp_path: Path) -> None:
+    out = tmp_path / "empty.flp"
+    pyflp_route.load_samples(str(out), _dummy_wavs(tmp_path, 2))
+    pl = pyflp_route.read_playlist(str(out))
+    assert pl["clip_count"] == 0
+    assert pl["channel_count"] == 2
+
+
+def test_diff_reports_moves(tmp_path: Path) -> None:
+    """Same 3 stems, stagger 8 vs stagger 4: clip 0 unchanged, clips 1-2 moved."""
+    wavs = _dummy_wavs(tmp_path, 3)
+    a, b = tmp_path / "a.flp", tmp_path / "b.flp"
+    pyflp_route.load_samples(str(a), wavs, tempo=120.0, arrange=True, stagger_bars=8)
+    pyflp_route.load_samples(str(b), wavs, tempo=120.0, arrange=True, stagger_bars=4)
+    d = pyflp_route.diff(str(a), str(b))
+    assert d["unchanged"] == 1
+    assert len(d["changed"]) == 2
+    assert all(ch["fields"] == ["position"] for ch in d["changed"])
+    assert d["added"] == [] and d["removed"] == []
+
+
+def test_diff_reports_added_clip(tmp_path: Path) -> None:
+    wavs = _dummy_wavs(tmp_path, 3)
+    a, b = tmp_path / "a2.flp", tmp_path / "b2.flp"
+    pyflp_route.load_samples(str(a), wavs[:2], tempo=120.0, arrange=True, stagger_bars=8)
+    pyflp_route.load_samples(str(b), wavs, tempo=120.0, arrange=True, stagger_bars=8)
+    d = pyflp_route.diff(str(a), str(b))
+    assert d["unchanged"] == 2
+    assert d["changed"] == []
+    assert len(d["added"]) == 1
+    assert d["channel_count_changed"] == {"a": 2, "b": 3}
+
+
+def test_diff_reports_tempo_change(tmp_path: Path) -> None:
+    wavs = _dummy_wavs(tmp_path, 2)
+    a, b = tmp_path / "a3.flp", tmp_path / "b3.flp"
+    pyflp_route.load_samples(str(a), wavs, tempo=110.0, arrange=True)
+    pyflp_route.load_samples(str(b), wavs, tempo=140.0, arrange=True)
+    d = pyflp_route.diff(str(a), str(b))
+    assert d["tempo_changed"] == {"a": 110.0, "b": 140.0}

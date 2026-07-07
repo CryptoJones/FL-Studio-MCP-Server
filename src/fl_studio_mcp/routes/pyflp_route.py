@@ -282,6 +282,239 @@ def load_samples(
     return info(str(out))
 
 
+# --------------------------------------------------------------------------- #
+# Playlist read-back (the FL -> Claude half of the round-trip)
+# --------------------------------------------------------------------------- #
+def _raw_playlist(project: Any) -> bytes:
+    """Raw data bytes of the ``ArrangementID.Playlist`` event (empty if none).
+
+    Event wire layout: 1-byte id, LEB128 size, then the data.
+    """
+    for e in project.events:
+        if str(e.id) == "ArrangementID.Playlist":
+            raw = bytes(e)
+            i, size, shift = 1, 0, 0
+            while True:
+                b = raw[i]
+                i += 1
+                size |= (b & 0x7F) << shift
+                if not b & 0x80:
+                    break
+                shift += 7
+            return raw[i : i + size]
+    return b""
+
+
+def _is_record_start(data: bytes, off: int) -> bool:
+    """Heuristic: does a playlist item record start at ``off``?
+
+    Every record's core has ``pattern_base`` == 20480 at offset +4 and a
+    ``track_rvidx`` (= 499 - track) <= 499 at offset +12 — together a strong
+    sync anchor for re-aligning across variable-length records.
+    """
+    if off + 16 > len(data):
+        return False
+    base = int.from_bytes(data[off + 4 : off + 6], "little")
+    rvidx = int.from_bytes(data[off + 12 : off + 14], "little")
+    return base == 20480 and rvidx <= 499
+
+
+def _split_records(data: bytes) -> list[bytes]:
+    """Split raw playlist data into per-clip records.
+
+    Freshly-placed clips are exactly 80 bytes, but FL grows the trailer when a
+    clip is edited in the GUI (fades/slices -> 100/120 bytes), so a real
+    FL-saved project's playlist is NOT divisible by 80. Try the known sizes
+    first, validated by the next record's sync anchor; fall back to a 4-byte
+    forward scan for anything FL invents next.
+    """
+    records: list[bytes] = []
+    o, n = 0, len(data)
+    while o + 32 <= n:
+        end = None
+        for cand in (o + 80, o + 100, o + 120):
+            if cand == n or _is_record_start(data, cand):
+                end = cand
+                break
+        if end is None:
+            c = o + 80
+            while c < n and not _is_record_start(data, c):
+                c += 4
+            end = min(c, n)
+        records.append(data[o:end])
+        o = end
+    return records
+
+
+def _parse_record(rec: bytes) -> dict[str, Any]:
+    """Decode one playlist item record (see the 80-byte layout in ``load_samples``)."""
+    import struct as _st
+
+    position, _base, item_index, length, rvidx, group = _st.unpack_from("<IHHIHH", rec, 0)
+    flags = _st.unpack_from("<H", rec, 18)[0]
+    start_offset, end_offset = _st.unpack_from("<ff", rec, 24)
+    d: dict[str, Any] = {
+        "position": position,
+        "item_index": item_index,
+        "length": length,
+        "track": 499 - rvidx,
+        "group": group,
+        "flags": flags,
+        "start_offset": start_offset,
+        "end_offset": end_offset,
+        "whole_clip": start_offset == -1.0 and end_offset == -1.0,
+        "record_size": len(rec),
+        "edited_in_fl": len(rec) != 80,  # grown trailer = GUI edit (fade/slice/...)
+    }
+    if item_index >= 20480:
+        d["kind"] = "pattern"
+        d["pattern"] = item_index - 20480
+    else:
+        d["kind"] = "channel"
+        d["channel_iid"] = item_index
+    if len(rec) >= 36:
+        d["clip_id"] = _st.unpack_from("<I", rec, 32)[0]
+    return d
+
+
+def read_playlist(path: str) -> dict[str, Any]:
+    """Read an ``.flp``'s Playlist back out: every clip with its position/length/track.
+
+    The read half of the FL round-trip: hand FL a generated project, let a human
+    rearrange it in the GUI and save, then call this to see the arrangement as
+    data (ticks AND seconds). Handles FL 2025's variable-length records (80-byte
+    canonical, 100/120 for GUI-edited clips).
+    """
+    p = Path(path).expanduser()
+    project = pyflp.parse(p)
+    ppq = int(project.ppq or 96)
+    bpm = float(project.tempo or 120.0)
+    sec_per_tick = 60.0 / (bpm * ppq)
+
+    # Rack-order channel facts straight from the event stream.
+    chans: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    for e in project.events:
+        sid = str(e.id)
+        if sid == "ChannelID.New":
+            cur = {"iid": int(e.value), "type": None, "sample_path": None, "name": None}
+            chans.append(cur)
+        elif cur is not None and sid == "ChannelID.Type":
+            cur["type"] = int(e.value)
+        elif cur is not None and sid == "ChannelID.SamplePath":
+            try:
+                cur["sample_path"] = str(e.value).rstrip("\x00")
+            except Exception:
+                cur["sample_path"] = None
+    try:
+        names = [c.name for c in project.channels]
+    except NoModelsFound:
+        names = []
+    for i, ch in enumerate(chans):
+        if i < len(names):
+            ch["name"] = names[i]
+    by_iid = {ch["iid"]: ch for ch in chans}
+
+    clips: list[dict[str, Any]] = []
+    for rec in _split_records(_raw_playlist(project)):
+        d = _parse_record(rec)
+        d["position_sec"] = round(d["position"] * sec_per_tick, 6)
+        d["length_sec"] = round(d["length"] * sec_per_tick, 6)
+        if d["kind"] == "channel":
+            ch = by_iid.get(d["channel_iid"])
+            if ch is not None:
+                d["channel_name"] = ch["name"]
+                d["channel_type"] = ch["type"]
+                d["sample_path"] = ch["sample_path"]
+        clips.append(d)
+    clips.sort(key=lambda c: (c["position"], c["track"]))
+    return {
+        "path": str(p),
+        "title": project.title,
+        "tempo": bpm,
+        "ppq": ppq,
+        "channel_count": len(chans),
+        "channels": chans,
+        "clip_count": len(clips),
+        "clips": clips,
+    }
+
+
+def diff(path_a: str, path_b: str) -> dict[str, Any]:
+    """Diff two ``.flp`` playlists: what moved, resized, changed track, appeared, vanished.
+
+    Built for the edit loop: A = the generated project, B = the human's FL save.
+    Clips are matched per channel/pattern (``item_index``); leftover clips on the
+    same item are paired in position order and reported field-by-field.
+    """
+    from collections import Counter, defaultdict
+
+    a, b = read_playlist(path_a), read_playlist(path_b)
+
+    def key(c: dict[str, Any]) -> tuple[int, int, int, int]:
+        return (c["item_index"], c["position"], c["length"], c["track"])
+
+    label: dict[int, str] = {}
+    for c in a["clips"] + b["clips"]:
+        if c["item_index"] not in label:
+            label[c["item_index"]] = (
+                c.get("channel_name")
+                or (f"pattern {c['pattern']}" if c["kind"] == "pattern" else f"iid {c['item_index']}")
+            )
+
+    ca, cb = Counter(map(key, a["clips"])), Counter(map(key, b["clips"]))
+    unchanged = sum((ca & cb).values())
+    ga: dict[int, list[tuple]] = defaultdict(list)
+    gb: dict[int, list[tuple]] = defaultdict(list)
+    for k in (ca - cb).elements():
+        ga[k[0]].append(k)
+    for k in (cb - ca).elements():
+        gb[k[0]].append(k)
+
+    changed, removed, added = [], [], []
+    for item in sorted(set(ga) | set(gb)):
+        la, lb = sorted(ga.get(item, [])), sorted(gb.get(item, []))
+        for old, new in zip(la, lb):
+            fields = [
+                name
+                for name, i in (("position", 1), ("length", 2), ("track", 3))
+                if old[i] != new[i]
+            ]
+            changed.append(
+                {
+                    "item": label[item],
+                    "item_index": item,
+                    "old": {"position": old[1], "length": old[2], "track": old[3]},
+                    "new": {"position": new[1], "length": new[2], "track": new[3]},
+                    "fields": fields,
+                }
+            )
+        for k in la[len(lb):]:
+            removed.append({"item": label[item], "item_index": item, "position": k[1], "length": k[2], "track": k[3]})
+        for k in lb[len(la):]:
+            added.append({"item": label[item], "item_index": item, "position": k[1], "length": k[2], "track": k[3]})
+
+    result: dict[str, Any] = {
+        "a": a["path"],
+        "b": b["path"],
+        "unchanged": unchanged,
+        "changed": changed,
+        "added": added,
+        "removed": removed,
+    }
+    for field in ("tempo", "ppq", "title", "channel_count"):
+        if a[field] != b[field]:
+            result[f"{field}_changed"] = {"a": a[field], "b": b[field]}
+    renames = [
+        {"iid": x["iid"], "a": x["name"], "b": y["name"]}
+        for x, y in zip(a["channels"], b["channels"])
+        if x["iid"] == y["iid"] and x["name"] != y["name"]
+    ]
+    if renames:
+        result["channels_renamed"] = renames
+    return result
+
+
 def set_tempo(path: str, bpm: float, out_path: str | None = None) -> dict[str, Any]:
     """Set the project tempo (BPM). Writes in place unless ``out_path`` is given."""
     project = pyflp.parse(Path(path).expanduser())
@@ -476,6 +709,31 @@ def register(mcp: Any) -> None:
         """
         return json.dumps(rename_channel(path, index, name, out_path), indent=2)
 
+    @mcp.tool()
+    def flp_read_playlist(path: str) -> str:
+        """Read an .flp's Playlist arrangement: every clip with position/length/track, in ticks and seconds.
+
+        The read half of the FL round-trip: after a human rearranges a generated project in
+        FL and saves, this returns the arrangement as data. Handles FL 2025's variable-length
+        playlist records (80-byte canonical; 100/120 bytes for clips edited in the GUI).
+
+        Args:
+            path: Path to the .flp file.
+        """
+        return json.dumps(read_playlist(path), indent=2)
+
+    @mcp.tool()
+    def flp_diff(path_a: str, path_b: str) -> str:
+        """Diff two .flp playlists: clips moved/resized/retracked, added, removed; tempo/title/channel changes.
+
+        Built for the edit loop: path_a = the generated project, path_b = the human's FL save.
+
+        Args:
+            path_a: Baseline .flp (e.g. the generated project).
+            path_b: Edited .flp (e.g. the FL save after rearranging).
+        """
+        return json.dumps(diff(path_a, path_b), indent=2)
+
 
 def status() -> str:
-    return "Route A (PyFLP, offline .flp read/write): READY — create/info/load_samples/set_tempo/set_metadata/rename_channel"
+    return "Route A (PyFLP, offline .flp read/write): READY — create/info/load_samples/read_playlist/diff/set_tempo/set_metadata/rename_channel"
