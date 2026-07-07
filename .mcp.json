@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "fl-studio": {
+      "command": "fl-studio-mcp"
+    }
+  }
+}
