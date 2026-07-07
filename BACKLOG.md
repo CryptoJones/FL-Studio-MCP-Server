@@ -9,6 +9,8 @@ Every item here has a matching issue and vice versa; keep the two in sync.
 
 ## Done
 
+- [x] **FL 2025 arrangement fix** — `flp_load_samples(arrange=True)` now writes native FL Audio Clips (`ChannelID.Type=4` channels + FL 2025's 80-byte Playlist records, reverse-engineered byte-for-byte) so every stem loads on the Playlist timeline; +unit tests; v0.0.2 (2026-07-07) ([#13](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/13)).
+
 - [x] **Route B (Flapi)** — live FL control: `fl_connect`/`fl_transport`/`fl_get_tempo`/`fl_mixer`/`fl_channels`/`fl_hint`/`fl_eval_expr` + `fl_install_server`, graceful degradation, error-path tests (2026-07-05) ([#4](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/4)).
 - [x] **Route C (Piano Roll)** — bundled `.pyscript` library (transpose/humanize/strum/note_repeats/scale_fill) + list/describe/install tools + syntax-check tests (2026-07-05) ([#5](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/5)).
 - [x] ADR: primary route is **PyFLP first, Flapi later** — documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (2026-07-05) ([#1](https://github.com/CryptoJones/FL-Studio-MCP-Server/issues/1)).

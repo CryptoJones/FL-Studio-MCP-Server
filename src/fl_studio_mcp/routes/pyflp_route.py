@@ -222,6 +222,22 @@ def load_samples(
         ppq = project.ppq or 96
         bpm = float(tempo) if tempo is not None else float(project.tempo or 120.0)
 
+        events = project.events
+
+        # A Playlist audio clip can only reference an **Audio Clip channel** (ChannelID.Type
+        # == 4). load_samples clones the template's Sampler channel (Type 0), which lives in
+        # the Channel Rack but is NOT a valid playlist-clip target — FL silently discards any
+        # clip pointing at it. Promote every channel to Type 4 so the clips survive. The
+        # channel iid (ChannelID.New) is what the playlist item references, in rack order.
+        iids: list[int] = []
+        for e in list(events):
+            if str(e.id) == "ChannelID.Type":
+                e.value = 4
+            elif str(e.id) == "ChannelID.New":
+                iids.append(int(e.value))
+
+        idx = next(i for i, e in enumerate(list(events)) if str(e.id) == "ArrangementID.Playlist")
+
         def _dur_sec(path: str) -> float:
             try:
                 with _cl.closing(_wave.open(str(Path(path).expanduser()))) as w:
@@ -229,22 +245,36 @@ def load_samples(
             except Exception:
                 return 4.0 * 4 * 60.0 / bpm  # fallback ~4 bars if not a readable WAV
 
+        # FL Studio 2025 (25.x) writes each playlist item as an **80-byte** record: a 32-byte
+        # core followed by a 48-byte trailer. This layout was reverse-engineered by diffing an
+        # FL-native save byte-for-byte (PyFLP 2.2.1's own PlaylistEvent struct is 32/60/68 and
+        # does NOT round-trip FL 2025 — writing any other size makes FL parse the first clip,
+        # then lose record alignment and drop every clip after it). The trailer is a 4-byte
+        # per-clip id followed by FL's constant defaults (a 1.0 float and a 1.0 double); the
+        # remaining bytes are zero-filled.
         def _plitem(position: int, channel_iid: int, length: int, track: int) -> bytes:
-            # 32-byte FL ChannelPLItem: position, pattern_base=20480, item_index=channel iid,
-            # length, track_rvidx=499-track, group, const flags, start/end offset = -1.0 (whole clip).
-            return _st.pack(
+            core = _st.pack(
                 "<IHHIHH2sH4sff",
                 position, 20480, channel_iid, length, 499 - track, 0,
-                b"\x78\x00", 64, b"\x40\x64\x80\x80", -1.0, -1.0,
-            )
+                b"\x78\x00", 0x40, b"\x40\x64\x80\x80", -1.0, -1.0,
+            )  # 32 bytes: pos, pattern_base, item_index (iid), length, track_rvidx, group,
+            #    markers, item_flags, markers, start_offset/end_offset = -1.0 (whole clip)
+            trailer = (
+                _st.pack("<I", 0x10 + track)  # per-clip id (any distinct value works)
+                + b"\x00" * 16
+                + _st.pack("<f", 1.0)
+                + b"\x00" * 8
+                + _st.pack("<d", 1.0)
+                + b"\x00" * 8
+            )  # 48 bytes
+            return core + trailer
 
         step = int(stagger_bars) * 4 * ppq
         data = b"".join(
-            _plitem(i * step, i, round(_dur_sec(it["path"]) * bpm / 60.0 * ppq), i)
+            _plitem(i * step, iids[i] if i < len(iids) else i,
+                    round(_dur_sec(it["path"]) * bpm / 60.0 * ppq), i)
             for i, it in enumerate(items)
         )
-        events = project.events
-        idx = next(i for i, e in enumerate(list(events)) if str(e.id) == "ArrangementID.Playlist")
         events.remove(ArrangementID.Playlist)
         events.insert(idx, PlaylistEvent(ArrangementID.Playlist, data))
         pyflp.save(project, out)

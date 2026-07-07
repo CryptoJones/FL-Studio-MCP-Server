@@ -19,7 +19,7 @@ which is dedicated to Maj. Brian Dix of "The Commandant's Own" — the two Marin
 [![GitHub](https://img.shields.io/badge/GitHub-CryptoJones%2FFL--Studio--MCP--Server-181717?logo=github&logoColor=white)](https://github.com/CryptoJones/FL-Studio-MCP-Server)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-server-6E56CF?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io/)
-[![Version](https://img.shields.io/badge/version-0.0.1-orange)](https://github.com/CryptoJones/FL-Studio-MCP-Server)
+[![Version](https://img.shields.io/badge/version-0.0.2-orange)](https://github.com/CryptoJones/FL-Studio-MCP-Server)
 
 An **MCP server that lets Claude Code (and any MCP client) interact with FL Studio** —
 drive the running DAW and generate/edit FL projects programmatically.
@@ -76,6 +76,17 @@ API; that's the job of **Route B (Flapi)**, where FL itself does the note-making
 > memberless `EventEnum` trips a `TypeError` in `enum.Enum.__new__` before the `_missing_`
 > hook runs. `fl_studio_mcp/_compat.py` installs a tiny, targeted shim that routes the
 > lookup back through PyFLP's own resolver, without patching PyFLP's source.
+
+> **FL 2025 arrangement note:** with `arrange=true`, `flp_load_samples` drops each stem as a
+> native FL **Audio Clip on the Playlist**, so the project opens already arranged. Two FL
+> Studio 2025 (25.x) details make this non-trivial, both reverse-engineered byte-for-byte
+> from FL-native saves: (1) a Playlist audio clip can only reference an **Audio Clip channel**
+> (`ChannelID.Type == 4`) — a plain Sampler (Type 0) is silently dropped — so the writer
+> promotes each channel; and (2) FL 2025 stores each freshly-placed playlist item as an
+> **80-byte record** (32-byte core + 48-byte trailer) that PyFLP 2.2.1's 32/60/68 struct
+> can't round-trip, so the writer emits it directly. All three FL playlist clip types (audio,
+> automation, pattern) share this 80-byte record; the `item_index` field selects among them
+> (`< 20480` → a channel clip by iid; `≥ 20480` → `pattern_base + pattern#`).
 
 ## Route B (Flapi) — live control of a running FL
 

@@ -1,6 +1,6 @@
 [project]
 name = "fl-studio-mcp-server"
-version = "0.0.1"
+version = "0.0.2"
 description = "MCP server to interact with FL Studio — drive the DAW and generate/edit .flp projects"
 readme = "README.md"
 requires-python = ">=3.11"
