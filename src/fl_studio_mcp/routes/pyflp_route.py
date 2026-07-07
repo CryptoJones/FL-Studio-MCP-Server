@@ -117,6 +117,141 @@ def create(
     return info(str(out))
 
 
+def load_samples(
+    out_path: str,
+    samples: list[Any],
+    *,
+    title: str | None = None,
+    tempo: float | None = None,
+    artists: str | None = None,
+    genre: str | None = None,
+    comments: str | None = None,
+    arrange: bool = False,
+    stagger_bars: int = 8,
+) -> dict[str, Any]:
+    """Create a new ``.flp`` with **one Sampler channel per audio file** in ``samples``.
+
+    Each ``samples`` entry is a path string, or a ``{"path": ..., "name": ...}`` dict. The
+    bundled Empty template ships a single Sampler channel; this clones that channel's full
+    event block once per sample and injects a ``ChannelID.SamplePath`` event so each channel
+    points at its file (PyFLP edits existing events but can't create channels from its public
+    model — so we clone at the event level). Channel names + tempo/metadata are set via the
+    model in a second pass. Opens straight into FL with every clip loaded in the Channel Rack.
+
+    If ``arrange`` is true, a third pass also drops each channel as a full-length **Audio Clip
+    on the Playlist timeline**, one per track, each offset ``stagger_bars`` bars after the last
+    (``stagger_bars=0`` stacks them all at bar 1). Clip positions/lengths are computed in PPQ
+    ticks at the project tempo — so the project opens already arranged, not just loaded.
+    """
+    import copy as _copy
+
+    from pyflp._events import UnicodeEvent
+    from pyflp.channel import ChannelID
+
+    def _norm(s: Any) -> dict[str, str]:
+        if isinstance(s, str):
+            p = str(Path(s).expanduser())
+            return {"path": p, "name": Path(p).stem}
+        p = str(Path(s["path"]).expanduser())
+        return {"path": p, "name": s.get("name") or Path(p).stem}
+
+    items = [_norm(s) for s in samples]
+    if not items:
+        raise ValueError("samples must be a non-empty list")
+
+    def _sample_event(path: str) -> UnicodeEvent:
+        # FL stores the sample path as a null-terminated UTF-16-LE string event.
+        return UnicodeEvent(ChannelID.SamplePath, path.encode("utf-16-le") + b"\x00\x00")
+
+    out = Path(out_path).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(_template_bytes())
+
+    # Pass 1 — clone the template's single Sampler channel once per sample; point each at its file.
+    project = pyflp.parse(out)
+    events = project.events
+    seq = list(events)
+    start = next(i for i, e in enumerate(seq) if str(e.id) == "ChannelID.New")
+    arr = next(i for i, e in enumerate(seq) if str(e.id).startswith("ArrangementID"))
+    block = [_copy.deepcopy(seq[i]) for i in range(start, arr)]  # the full channel-0 event block
+
+    # channel 0 = items[0]: inject its SamplePath after the channel's plugin-name event.
+    name_pos = next(i for i, e in enumerate(seq) if str(e.id) == "PluginID.Name")
+    events.insert(name_pos + 1, _sample_event(items[0]["path"]))
+    insert_at = arr + 1  # the injection shifted the arrangement section right by one
+
+    for idx in range(1, len(items)):
+        clone = [_copy.deepcopy(e) for e in block]
+        for e in clone:
+            if str(e.id) == "ChannelID.New":
+                e.value = idx  # unique channel index
+        clone_name_pos = next(i for i, e in enumerate(clone) if str(e.id) == "PluginID.Name")
+        clone.insert(clone_name_pos + 1, _sample_event(items[idx]["path"]))
+        for offset, e in enumerate(clone):
+            events.insert(insert_at + offset, e)
+        insert_at += len(clone)
+    pyflp.save(project, out)
+
+    # Pass 2 — channel names + tempo/metadata via the high-level model.
+    project = pyflp.parse(out)
+    channels = list(project.channels)
+    for i, item in enumerate(items):
+        if i < len(channels):
+            channels[i].name = item["name"]
+    if title is not None:
+        project.title = title
+    if tempo is not None:
+        project.tempo = float(tempo)
+    if artists is not None:
+        project.artists = artists
+    if genre is not None:
+        project.genre = genre
+    if comments is not None:
+        project.comments = comments
+    pyflp.save(project, out)
+
+    # Pass 3 (optional) — drop each channel as an Audio Clip on the Playlist timeline.
+    if arrange:
+        import contextlib as _cl
+        import struct as _st
+        import wave as _wave
+
+        from pyflp.arrangement import ArrangementID, PlaylistEvent
+
+        project = pyflp.parse(out)
+        ppq = project.ppq or 96
+        bpm = float(tempo) if tempo is not None else float(project.tempo or 120.0)
+
+        def _dur_sec(path: str) -> float:
+            try:
+                with _cl.closing(_wave.open(str(Path(path).expanduser()))) as w:
+                    return w.getnframes() / float(w.getframerate())
+            except Exception:
+                return 4.0 * 4 * 60.0 / bpm  # fallback ~4 bars if not a readable WAV
+
+        def _plitem(position: int, channel_iid: int, length: int, track: int) -> bytes:
+            # 32-byte FL ChannelPLItem: position, pattern_base=20480, item_index=channel iid,
+            # length, track_rvidx=499-track, group, const flags, start/end offset = -1.0 (whole clip).
+            return _st.pack(
+                "<IHHIHH2sH4sff",
+                position, 20480, channel_iid, length, 499 - track, 0,
+                b"\x78\x00", 64, b"\x40\x64\x80\x80", -1.0, -1.0,
+            )
+
+        step = int(stagger_bars) * 4 * ppq
+        data = b"".join(
+            _plitem(i * step, i, round(_dur_sec(it["path"]) * bpm / 60.0 * ppq), i)
+            for i, it in enumerate(items)
+        )
+        events = project.events
+        idx = next(i for i, e in enumerate(list(events)) if str(e.id) == "ArrangementID.Playlist")
+        events.remove(ArrangementID.Playlist)
+        events.insert(idx, PlaylistEvent(ArrangementID.Playlist, data))
+        pyflp.save(project, out)
+
+    return info(str(out))
+
+
 def set_tempo(path: str, bpm: float, out_path: str | None = None) -> dict[str, Any]:
     """Set the project tempo (BPM). Writes in place unless ``out_path`` is given."""
     project = pyflp.parse(Path(path).expanduser())
@@ -211,6 +346,51 @@ def register(mcp: Any) -> None:
         )
 
     @mcp.tool()
+    def flp_load_samples(
+        out_path: str,
+        samples: list[Any],
+        title: str | None = None,
+        tempo: float | None = None,
+        artists: str | None = None,
+        genre: str | None = None,
+        comments: str | None = None,
+        arrange: bool = False,
+        stagger_bars: int = 8,
+    ) -> str:
+        """Create an .flp with ONE Sampler channel per audio file — loaded in the Channel Rack, optionally arranged.
+
+        Clones FL's Empty-template Sampler once per file and points each channel at its sample,
+        then names the channels and sets tempo/metadata. If arrange=True it also drops each stem
+        as a full-length Audio Clip on the Playlist timeline (one per track, staggered), so the
+        project opens already arranged.
+
+        Args:
+            out_path: Where to write the new .flp.
+            samples: Audio files to load. Each item is a path string, or a {"path": ..., "name": ...} object.
+            title: Project title.
+            tempo: Tempo in BPM.
+            artists: Artist/author name.
+            genre: Genre.
+            comments: Project comments.
+            arrange: If true, also place each stem as an Audio Clip on the Playlist timeline.
+            stagger_bars: Bars to offset each successive clip when arranging (0 = all stacked at bar 1).
+        """
+        return json.dumps(
+            load_samples(
+                out_path,
+                samples,
+                title=title,
+                tempo=tempo,
+                artists=artists,
+                genre=genre,
+                comments=comments,
+                arrange=arrange,
+                stagger_bars=stagger_bars,
+            ),
+            indent=2,
+        )
+
+    @mcp.tool()
     def flp_set_tempo(path: str, bpm: float, out_path: str | None = None) -> str:
         """Set the tempo (BPM) of an .flp. Edits in place unless out_path is given.
 
@@ -268,4 +448,4 @@ def register(mcp: Any) -> None:
 
 
 def status() -> str:
-    return "Route A (PyFLP, offline .flp read/write): READY — create/info/set_tempo/set_metadata/rename_channel"
+    return "Route A (PyFLP, offline .flp read/write): READY — create/info/load_samples/set_tempo/set_metadata/rename_channel"
