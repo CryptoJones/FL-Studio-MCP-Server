@@ -1,0 +1,19 @@
+# mcp-conformance target config for FL-Studio-MCP-Server.
+# Run from the repo root with the project venv present:
+#   /path/to/mcp-conformance/.venv/bin/mcp-conformance run
+#
+# The behavioural probes are the two inert, read-only status tools. They need no
+# running FL Studio and touch nothing: `ping` is a health check and `routes`
+# reports the three integration routes' status. The route tools that read/write
+# .flp files or talk to a live FL Studio instance are intentionally NOT probed.
+command = [".venv/bin/fl-studio-mcp"]
+
+[[probe]]
+tool = "ping"
+
+[[probe]]
+tool = "routes"
+
+[expect]
+max_output_chars = 200000
+# The server exposes no injection-flagging tool, so expect.injection is omitted.

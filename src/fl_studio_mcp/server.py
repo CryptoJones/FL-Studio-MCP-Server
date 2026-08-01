@@ -5,11 +5,11 @@ docs/ARCHITECTURE.md). Route A (PyFLP, offline .flp read/write) is implemented a
 registers real tools; Routes B (Flapi) and C (scripts) are scaffolded pending
 FL-side setup. Remaining work is tracked in BACKLOG.md.
 """
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from fl_studio_mcp.routes import flapi_route, pyflp_route, script_route
 
-mcp = FastMCP("fl-studio-mcp")
+mcp = MCPServer("fl-studio-mcp")
 
 
 @mcp.tool()

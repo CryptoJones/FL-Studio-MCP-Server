@@ -39,3 +39,34 @@ jobs:
         run: python -m pip install -e ".[test]"
       - name: Run tests
         run: python -m pytest -q
+
+  conformance:
+    name: MCP conformance (live stdio)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Conformance suite
+        # mcp-conformance is a private repo, so this job is a graceful no-op until
+        # MCP_CONFORMANCE_TOKEN (a PAT with read access to it) is set in the repo's
+        # Actions secrets. Then it boots `fl-studio-mcp` over stdio and asserts the
+        # baseline 2026-07-28 contracts (see conformance.toml).
+        env:
+          MCP_CONFORMANCE_TOKEN: ${{ secrets.MCP_CONFORMANCE_TOKEN }}
+        run: |
+          if [ -z "$MCP_CONFORMANCE_TOKEN" ]; then
+            echo "MCP_CONFORMANCE_TOKEN not set — skipping conformance suite."
+            exit 0
+          fi
+          python -m venv .venv
+          .venv/bin/pip install -U pip
+          .venv/bin/pip install -e .
+          # A failed clone/install (expired PAT, no access) is a skip, not a hard
+          # failure — this job is a no-op until a working token is wired up.
+          if ! .venv/bin/pip install "git+https://x-access-token:${MCP_CONFORMANCE_TOKEN}@github.com/CryptoJones/mcp-conformance.git"; then
+            echo "::warning::Could not install mcp-conformance (token expired or no access?) — skipping conformance suite."
+            exit 0
+          fi
+          .venv/bin/mcp-conformance run -- -q
